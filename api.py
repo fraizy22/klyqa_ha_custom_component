@@ -628,7 +628,7 @@ class Klyqa:
                 self.sio.connect(
                     "https://app-api.test.qconnex.io",
                     # transports=["polling"],
-                    wait_timeout=1,
+                    wait_timeout=11,
                 )  # , auth=profile.smoId
                 break
 
