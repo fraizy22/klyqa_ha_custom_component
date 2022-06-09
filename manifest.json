@@ -8,7 +8,7 @@
   "zeroconf": [],
   "homekit": {},
   "requirements": ["pycryptodomex==3.14.1", "websockets", "websocket-client", "jsonschema", "bidict"],
-  "dependencies": ["network"],
+  "dependencies": ["network", "light"],
   "after_dependencies": [],
   "codeowners": [
     "@fsqcx"
