@@ -32,7 +32,6 @@ import functools as ft
 from .libs import socketio
 
 from .const import REQUEST_TIMEOUT
-from ..canst import Oooo
 
 
 class SocketEvents:
