@@ -1,16 +1,26 @@
-"""The Klyqa integration."""
+###############################################################################
+#
+# The Klyqa Home Assistant Integration
+#
+# Company: QConnex GmbH / Klyqa
+# Author: Frederick Stallmeyer
+# E-Mail: frederick.stallmeyer@gmx.de
+#
+###############################################################################
+#
+# TODOs:
+#
+# Features:
+# + On try switchup lamp, search the lamp in the network
+#
+# Codequality
+# + Convert magicvalues to constants (commands, arguments, values, etc)
+#
+###############################################################################
+
 from __future__ import annotations
 
-"""
-Good integrations to look at:
-abode
-amrest
-accuweather
-met.no
-mobile_app
-helpers/device_registry
-helpers/entity_registry
-"""
+from sqlalchemy import false
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_TYPE, Platform
@@ -21,13 +31,9 @@ from homeassistant.helpers.entity_component import EntityComponent
 
 from homeassistant.helpers.area_registry import AreaEntry, AreaRegistry
 import homeassistant.helpers.area_registry as area_registry
-from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN, CONF_POLLING, CONF_SYNC_ROOMS, LOGGER
 
-from .coordinator import KlyqaDataUpdateCoordinator
-
-# from .light import KlyqaLight
 from .api import Klyqa
 import functools as ft
 from datetime import timedelta
@@ -59,23 +65,11 @@ async def async_setup(hass: HomeAssistant, yaml_config: ConfigType) -> bool:
     component.entries = {}
     component.remove_listeners = []
 
-    # with open(file,'r',encoding='utf-8') as r:
-    #     try:
-    #         hass.data[DOMAIN].local_device_configs = json.load(r)
-    #     except:
-    #         r.seek(0)
-    #         j = json.loads('['+r.read().replace('}{','},{')+']')[0]
     return True
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
-    # try:
-    #     await adguard.version()
-    # except AdGuardHomeConnectionError as exception:
-    #     raise ConfigEntryNotReady from exception
-
-    # hass.config_entries.async_setup_platforms(entry, PLATFORMS)
     """Set up or change Klyqa integration from a config entry."""
 
     username = entry.data.get(CONF_USERNAME)
@@ -86,7 +80,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry.data.get(CONF_SYNC_ROOMS) if entry.data.get(CONF_SYNC_ROOMS) else False
     )
     klyqa_api: Klyqa = None
-    # if DOMAIN in hass.data:
     if (
         DOMAIN in hass.data
         and hasattr(hass.data[DOMAIN], "entries")
@@ -107,37 +100,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             host,
             hass,
             sync_rooms,
+            scan_interval,
         )
         # hass.data[DOMAIN] = klyqa_api
         if not hasattr(hass.data[DOMAIN], "entries"):
             hass.data[DOMAIN].entries = {}
         hass.data[DOMAIN].entries[entry.entry_id] = klyqa_api
 
-    # await hass.async_add_executor_job(
-    #     klyqa_api.websocket,
-    # )
     if not await hass.async_add_executor_job(
         klyqa_api.login,
     ):
-        return False
-
-    # coordinator = KlyqaDataUpdateCoordinator(
-    #     hass, klyqa_api, timedelta(seconds=int(scan_interval))
-    # )
-    # await coordinator.async_config_entry_first_refresh()
+        return false
 
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))
 
-    # hass.data.setdefault(DOMAIN, {}).entries[entry.entry_id] = coordinator
-
     hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, klyqa_api.shutdown)
-    # await hass.async_add_executor_job(klyqa_api.load_settings)
-    # # await hass.async_add_executor_job(klyqa.async_search_lights)
-    # await hass.async_add_executor_job(
-    #     ft.partial(klyqa_api.search_lights, seconds_to_discover=1)
-    # )
-
-    # hass.data.setdefault(DOMAIN, {})[entry.entry_id] = co
 
     # For previous config entries where unique_id is None
     if entry.unique_id is None:

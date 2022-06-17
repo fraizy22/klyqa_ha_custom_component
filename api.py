@@ -1,24 +1,37 @@
 import argparse
 import asyncio
+from asyncio import transports
 import datetime
 import json
 import pickle
+import re
 import select
 import socket
+from sre_parse import State
 import sys
 import time
 import traceback
 import os
 import errno
 import threading
+from jsonschema import validate
+from homeassistant.components.light import (
+    ENTITY_ID_FORMAT,
+)
+from homeassistant.util import slugify
 
 import websockets
 import uuid
 import requests
 
+from homeassistant.helpers.entity import Entity
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import area_registry as ar
+from homeassistant.helpers.entity_component import EntityComponent
 import functools as ft
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .libs import socketio
 
 from .const import REQUEST_TIMEOUT
 
@@ -47,6 +60,15 @@ from .const import LOGGER
 
 STATE_CONNECTED = "CONNECTED"
 STATE_WAIT_IV = "WAIT_IV"
+
+PRODUCT_URLS = {
+    """TODO: Make permalinks for urls."""
+    "@klyqa.lighting.cw-ww.gu10": "https://klyqa.de/produkte/gu10-color-strahler",
+    "@klyqa.lighting.cw-ww.g95": "https://www.klyqa.de/produkte/g95-vintage-lampe",
+    "@klyqa.lighting.rgb-cw-ww.e14": "https://klyqa.de/produkte/gu10-white-strahler",
+    "@klyqa.lighting.rgb-cw-ww.e27": "https://www.klyqa.de/produkte/e27-color-lampe",
+    "@klyqa.cleaning.vc1": "",
+}
 
 SCENES = [
     {
@@ -231,6 +253,14 @@ class Connection:
     u_id = ""
 
 
+""" class used for device states send by local lamp request or websocket """
+
+
+class KlyqaDeviceState:
+    state = {}
+    ts: None  # timestamp to be read by the bulb entities and determines
+
+
 def send_msg(socket, message, sending_aes) -> bool:
     LOGGER.debug("Sending: " + message)
     message_encoded = message.encode("utf-8")
@@ -346,14 +376,19 @@ class Klyqa:
     lights = {}
     _access_token = ""
     _account_token = ""
-    _bearer = {}
+    _rest_headers = {}
     _settings = {}
+    _settings_loaded_ts = None
+    _device_states = {}
 
     __search_lights_mutex = threading.Lock()
+    __settings_mutex = threading.Lock()
     # __sending_mutex = threading.Lock() """exclude searching from multiple sending threads"""
     __send_search_mutex = threading.Lock()
     __send_workers = []
     __search_worker: Thread = None
+    # add_entities_ha: AddEntitiesCallback
+    ha_add_new_light_entity: AddEntitiesCallback
 
     def set_send_search_worker(
         self, search_worker: Thread = None, send_worker: Thread = None
@@ -409,12 +444,14 @@ class Klyqa:
         host,
         hass: HomeAssistant = None,
         sync_rooms=True,
+        scan_interval=30,
     ):
         self._username = username
         self._password = password
         self.sync_rooms: bool = sync_rooms
         self._host = host
         self.hass = hass
+        self.scan_interval = scan_interval
 
     def login(self) -> bool:
         """Login to klyqa account."""
@@ -437,7 +474,7 @@ class Klyqa:
         self._access_token = login_json.get("accessToken")
         self._account_token = login_json.get("accountToken")
 
-        self._bearer = {
+        self._rest_headers = {
             "Authorization": "Bearer " + self._access_token,
             "X-Request-Id": str(uuid.uuid4()),
             "Accept": "application/json",
@@ -445,10 +482,39 @@ class Klyqa:
             "accept-encoding": "gzip, deflate, utf-8",
         }
 
-        self.profile = self.request_get_beared(
+        profile_ret = self.request_get_beared(
             url="/auth/profile",
             timeout=REQUEST_TIMEOUT,
         )
+        if profile_ret:
+            try:
+                self.profile = json.loads(profile_ret.text)
+            except Exception as exception:
+                pass
+
+        return True
+
+    def send_device_state_via_rest(self, u_id) -> bool:
+        state = None
+        device = None
+        if self._access_token and (
+            not u_id in self._device_states
+            or not (device := self._device_states[u_id])
+            or not "cloudDeviceId" in device
+            or not ("state" in device)
+        ):
+            return False
+
+        try:
+            msg = json.dumps(device["state"])
+            response = requests.post(
+                self._host + "/device/" + state["cloudDeviceId"] + "/state",
+                headers={**self.request_gen_headers(), **{"timeout": REQUEST_TIMEOUT}},
+                json=msg,
+            )
+        except Exception as err:
+            LOGGER.error("Send device state to klyqa server failed: " + str(err))
+            return False
 
         return True
 
@@ -460,37 +526,229 @@ class Klyqa:
         response = requests.get(self._host + url, params, **kwargs)
         return response
 
+    def request_gen_headers(self):
+        """Send request get and if logged out login again."""
+        self._rest_headers["X-Request-Id"] = str(uuid.uuid4())
+        return self._rest_headers
+
     def request_get_beared(self, url, params=None, **kwargs):
         """Send request get and if logged out login again."""
-        self._bearer["X-Request-Id"] = str(uuid.uuid4())
-        response_object = self.request_get(url, params, headers=self._bearer, **kwargs)
+        response_object = self.request_get(
+            url, params, headers=self.request_gen_headers(), **kwargs
+        )
         return response_object
 
-    async def websocket(self):
-        # self.websocket = websockets.unix_connect("https://app-api.test.qconnex.io")
+    async def local_request_update_device_state(self, device_id):
+        ret = await self.local_send_to_bulb("--request", u_id=device_id)
 
-        # self.websocket.emit(SocketEvents.REGISTER, self.profile["smoId"])
-        # await websocket.send("Hello world!")
-        # await websocket.recv()
-        return None  # ret
+        if ret:
+            response = {"deviceId": device_id, "state": ret}
+            self.update_device_state(response, update_ha_entity_state=False)
 
-    # const REQUEST_TIMEOUT = 11000
-    #   const response = await axios({
-    #     method: 'GET',
-    #     baseURL: api,
-    #     url: '/auth/profile',
-    #     timeout: ,
-    #     headers: createHeaders({ accountToken, requestId }),
-    #   })
+    async def _get_cur_device_state_for_ha(self, u_id):
+        if u_id in self._device_states:
+            state = self._device_states.get(u_id)
+            if not state:
+                return
+            if (
+                "apply_current_state_to_ha_entity" in state
+                and state["apply_current_state_to_ha_entity"]
+            ):
+                """take the state setted by the network into the ha entity."""
+                state["apply_current_state_to_ha_entity"] = False
+                return state
+
+        await self.local_request_update_device_state(device_id=u_id)
+        if u_id in self._device_states:
+            return self._device_states.get(u_id)
+        return None
+
+    async def get_cur_device_state_for_ha(self, u_id):
+        ret = await self._get_cur_device_state_for_ha(u_id)
+        if not ret or not "state" in ret:
+            return None
+        return ret["state"]
+
+    def update_device_state(
+        self,
+        device_state: dict = {},
+        update_ha_entity_state=False,
+        apply_current_state_to_ha_entity=False,
+    ):
+        if not isinstance(device_state, dict) or not device_state.get("deviceId"):
+            return
+
+        device_state[
+            "apply_current_state_to_ha_entity"
+        ] = apply_current_state_to_ha_entity
+
+        di = {}
+        if device_state.get("deviceId") in self._device_states:
+            di = self._device_states[device_state.get("deviceId")]
+
+        self._device_states[device_state.get("deviceId")] = {
+            **di,
+            **device_state,
+        }
+
+        if update_ha_entity_state:
+            light_c: EntityComponent = self.hass.data.get("light")
+            if not light_c:
+                return
+
+            ent: Entity = light_c.get_entity("light." + device_state.get("deviceId"))
+            if ent:
+                ent.schedule_update_ha_state(force_refresh=True)
+
+    def websocket(self):
+        # standard Python, ssl_verify=False
+        self.sio = socketio.Client(
+            reconnection_delay=3,
+            logger=True,
+            engineio_logger=True,
+        )
+
+        class Profile:
+            smoId: str
+
+        profile: Profile = Profile()
+        profile.smoId = "07f5a530-a936-11ec-b6cd-01a051a6c03e"
+
+        @self.sio.on("connect")
+        def on_connect():
+            print("I'm connected to the websocket! " + str(self.sio.connection_url))
+
+            if self.profile and self.profile.get("smoId"):
+                retry = 0
+                while retry < 14:
+                    try:
+                        self.sio.emit(SocketEvents.REGISTER, self.profile.get("smoId"))
+                        print("Registering of the profile smo to the websocket done.")
+                        break
+
+                    except Exception as ex:
+                        print("Websocket emit error... resend: " + str(ex))
+                        if self.sio.eio.state == "disconnected":
+                            print("Websocket connection gone.")
+                            break
+                        retry = retry + 1
+                        print("Websocket retry registering profile smoId.")
+
+            light_c: EntityComponent = self.hass.data.get("light")
+            if not light_c:
+                return
+
+            for device_state in self._device_states:
+                entity: Entity = light_c.get_entity(
+                    entity_id=ENTITY_ID_FORMAT.format(
+                        slugify(self._device_states.get(device_state).get("deviceId"))
+                    ).lower()
+                )
+                if entity:
+                    entity.schedule_update_ha_state(force_refresh=True)
+
+        @self.sio.event
+        def connect_error(data):
+            print("The connection failed!")
+
+        @self.sio.event
+        def disconnect():
+            print("I'm disconnected! " + str(self.sio.connection_url))
+
+        light_c: EntityComponent = self.hass.data["light"]
+
+        @self.sio.on(SocketEvents.SYNC_DEVICE_STATE)
+        def catch_sync_device_state(data):
+            print("deviceState")
+            if data.get("deviceState"):
+                print("sync deviceState")
+                for state in data.get("deviceState"):
+                    print("update ent " + state["deviceId"].lower())
+                    # ent: Entity = light_c.get_entity(
+                    #     entity_id=ENTITY_ID_FORMAT.format(
+                    #         slugify(state["deviceId"])
+                    #     ).lower()
+                    # )
+                    # #     "light." + state["deviceId"].lower()
+                    # # )
+                    # if ent:
+                    #     print("update ent now")
+                    #     ent.schedule_update_ha_state(force_refresh=True)
+                self.update_device_state(
+                    state,
+                    update_ha_entity_state=True,
+                    apply_current_state_to_ha_entity=True,
+                )
+
+        @self.sio.on(SocketEvents.DEVICE_STATE)
+        def catch_device_state_connection(data):
+            self.update_device_state(data, update_ha_entity_state=True)
+
+        @self.sio.on(SocketEvents.SYNC_SETTINGS)
+        def catch_sync_settings(data):
+            pass
+            if not self.__settings_mutex.acquire(blocking=False):
+                self.hass.async_add_executor_job(self.load_settings)
+                return False
+            self._settings = data
+            self.__settings_mutex.release()
+
+        @self.sio.on(SocketEvents.EMAIL_APPROVED)
+        def catch_email_approved(data):
+            pass
+
+        retry = 0
+        while retry < 14:
+            try:
+                self.connect_websocket()
+                break
+
+            except Exception as ex:
+                print("Websocket error: " + str(ex))
+                retry = retry + 1
+                try:
+                    self.sio.disconnect()
+                except Exception as e:
+                    pass
+                pass
+
+        return None
+
+    def connect_websocket(self) -> bool:
+        self.sio.connect(
+            "https://app-api.test.qconnex.io",
+            wait_timeout=10,
+        )
+        return self.sio.eio.state != "disconnected"
+
+    def load_settings_eco(self) -> bool:
+        # if not self.__settings_mutex.acquire(blocking=True, timeout=REQUEST_TIMEOUT):
+        #     return False
+        ret = False
+        if datetime.datetime.now() - self._settings_loaded_ts >= self.scan_interval:
+            """look that the settings are loaded only once in the scan interval"""
+            ret = self.__load_settings()
+        # self.__settings_mutex.release()
+        return ret
 
     def load_settings(self) -> bool:
+        # if not self.__settings_mutex.acquire(blocking=True, timeout=REQUEST_TIMEOUT):
+        #     return False
+        ret = self.__load_settings()
+        # self.__settings_mutex.release()
+        return ret
+
+    def __load_settings(self) -> bool:
         """Load settings from klyqa account."""
         settings_response = self.request_get_beared("/settings")
         if settings_response.status_code != 200:
             return False
+
         if settings_response.text:
             try:
                 self._settings = json.loads(settings_response.text)
+
+                self._settings_loaded_ts = datetime.datetime.now()
 
                 if self.sync_rooms and len(self._settings.get("rooms")) > 0:
                     LOGGER.debug("Applying rooms from klyqa accounts to Home Assistant")
@@ -500,7 +758,7 @@ class Klyqa:
                             room.get("name")
                         ) and area_reg.async_create(room.get("name")):
                             LOGGER.info("New room created: %s", room.get("name"))
-            except:
+            except Exception as e:
                 LOGGER.debug("Couldn't load settings")
                 return False
 
@@ -508,7 +766,17 @@ class Klyqa:
 
     def shutdown(self):
         """Load settings from klyqa account."""
-        response = requests.post(self._host + "/auth/logout", headers=self._bearer)
+        if self.sio:
+            self.sio.disconnect()
+        if self._access_token:
+            try:
+                response = requests.post(
+                    self._host + "/auth/logout", headers=self._rest_headers
+                )
+                self._access_token = ""
+                self._account_token = ""
+            except:
+                LOGGER.warn("Couldn't logout.")
         for light in self.lights:
             if self.lights.get(light).connection.socket:
                 try:
@@ -537,7 +805,7 @@ class Klyqa:
                 and not self.lights[u_id].connection.socket._closed
             ):
                 """Found a connection of unit_id. Ping it to check it's working."""
-                state = await self._send_to_bulb(
+                state = await self._local_send_to_bulb(
                     "--ping",
                     connection=self.lights[u_id].connection,
                     reconnect=False,
@@ -633,7 +901,7 @@ class Klyqa:
 
                     # finish the handshake in the send bulb function
                     # Get there the local device id (u_id)
-                    state = await self.__send_to_bulb(
+                    state = await self.__local_send_to_bulb(
                         "--request", connection=connection, reconnect=False
                     )
                     if state and (
@@ -656,7 +924,9 @@ class Klyqa:
                             # always replace new connections with old once. (TODO: Is it the standard behaviour in the firmware?)
                             # if there is still an open connection try to close it
                             try:
-                                self.lights[connection.u_id].connection.socket.close()
+                                self.lights[
+                                    slugify(connection.u_id)
+                                ].connection.socket.close()
                             except Exception as ex:
                                 pass
 
@@ -684,7 +954,23 @@ class Klyqa:
 
         return
 
-    async def send_to_bulb(self, *argv, u_id=None, **kwargs) -> dict:
+    async def get_device_state(self, u_id):
+        if (
+            u_id in self._device_states
+            and "state" in self._device_states[u_id]
+            and (self.sio.eio.state != "disconnected" or self.connect_websocket())
+        ):
+            try:
+                self.sio.emit(SocketEvents.PUBLISH_STATE, self._device_states[u_id])
+            except Exception as e:
+                LOGGER.warn("Couldn't send command to websocket: " + str(e))
+
+        self.send_device_state_via_rest(u_id)
+
+    # def get_device_state(self, u_id):
+    #     if u_id in self._device_states and u_id in self._device_states[u_id]
+    #         return
+    async def local_send_to_bulb(self, *argv, u_id=None, **kwargs) -> dict:
         """
         Sending commands to the bulb. Put the local device id (u_id) of the bulb
         in the kwargs arguments. It finds the connection to the bulb by the local device
@@ -698,9 +984,10 @@ class Klyqa:
             reconnect (bool): Reconnect if tcp connection fails.
 
         Returns:
-            Json object: The answer of the bulb if successful.
+            Json object: The answer of the bulb if successful sent.
             None: Else.
         """
+
         if u_id not in self.lights:
             await self.search_lights(u_id=u_id, seconds_to_discover=0)
             return None
@@ -710,7 +997,7 @@ class Klyqa:
         attempt_num = 1
         while (
             not (
-                response := await self._send_to_bulb(
+                response := await self._local_send_to_bulb(
                     *argv,
                     connection=self.lights[u_id].connection,
                     retry=attempt_num > 1,
@@ -726,7 +1013,7 @@ class Klyqa:
 
         return response
 
-    async def _send_to_bulb(self, *argv, **kwargs) -> dict:
+    async def _local_send_to_bulb(self, *argv, **kwargs) -> dict:
 
         started = datetime.datetime.now()
 
@@ -742,14 +1029,14 @@ class Klyqa:
             if elapsed > datetime.timedelta(seconds=10):
                 return
 
-        return_value = await self.__send_to_bulb(*argv, **kwargs)
+        return_value = await self.__local_send_to_bulb(*argv, **kwargs)
 
         if got_mutex:
             self.__search_lights_mutex.release()
 
         return return_value
 
-    async def __send_to_bulb(
+    async def __local_send_to_bulb(
         self, *argv, connection, reconnect=True, retry=False, **kwargs
     ) -> dict:
         """
@@ -1121,7 +1408,7 @@ class Klyqa:
                 if connection.state == STATE_WAIT_IV and pkg_type == 0:
                     LOGGER.debug("Plain: " + str(pkg))
                     response_object = json.loads(pkg)
-                    connection.u_id = response_object["ident"]["unit_id"]
+                    connection.u_id = slugify(response_object["ident"]["unit_id"])
                     devices = {}
                     if not self._settings or not (
                         devices := self._settings.get("devices")
@@ -1129,7 +1416,7 @@ class Klyqa:
                         LOGGER.warn("No Klyqa settings found. Stop searching lights")
                         return
                     for device in devices:
-                        if device["localDeviceId"] == connection.u_id:
+                        if slugify(device["localDeviceId"]) == connection.u_id:
                             aes_key = bytes.fromhex(device["aesKey"])
                             break
                     if not aes_key:
