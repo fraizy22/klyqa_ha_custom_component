@@ -13,5 +13,5 @@ DOMAIN = "klyqa"
 
 CONF_POLLING = "polling"
 CONF_SYNC_ROOMS = "sync_rooms"
-EVENT_KLYQA_NEW_SETTINGS = "klyqa_new_settings"
+EVENT_KLYQA_NEW_LIGHT = "klyqa_new_light"
 REQUEST_TIMEOUT = 11000

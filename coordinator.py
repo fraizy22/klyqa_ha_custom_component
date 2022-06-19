@@ -10,7 +10,7 @@ from collections.abc import Callable
 
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .const import DOMAIN, LOGGER, EVENT_KLYQA_NEW_SETTINGS
+from .const import DOMAIN, LOGGER, EVENT_KLYQA_NEW_LIGHT
 
 # from .light import KlyqaLight
 from .api import Klyqa
@@ -55,7 +55,7 @@ class KlyqaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 if len(light) == 0:
                     # await self.hass.data["light"].async_add_entities()
                     self.hass.bus.async_fire(
-                        EVENT_KLYQA_NEW_SETTINGS, self.klyqa_api._settings
+                        EVENT_KLYQA_NEW_LIGHT, self.klyqa_api._settings
                     )
 
             return self.klyqa_api._settings
