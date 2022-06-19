@@ -33,7 +33,17 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .libs import socketio
 
-from .const import REQUEST_TIMEOUT
+from .const import REQUEST_TIMEOUT, EVENT_KLYQA_NEW_LIGHT, LOGGER
+
+# pycryptodome
+try:
+    from Cryptodome.Cipher import AES
+    from Cryptodome.Random import get_random_bytes
+except:
+    from Crypto.Cipher import AES
+    from Crypto.Random import get_random_bytes
+
+from threading import Thread
 
 
 class SocketEvents:
@@ -47,16 +57,6 @@ class SocketEvents:
     SYNC_SETTINGS = "syncSettings"
     EMAIL_APPROVED = "emailApproved"
 
-
-# pycryptodome
-try:
-    from Cryptodome.Cipher import AES
-    from Cryptodome.Random import get_random_bytes
-except:
-    from Crypto.Cipher import AES
-    from Crypto.Random import get_random_bytes
-
-from .const import LOGGER
 
 STATE_CONNECTED = "CONNECTED"
 STATE_WAIT_IV = "WAIT_IV"
@@ -256,6 +256,10 @@ class Connection:
 """ class used for device states send by local lamp request or websocket """
 
 
+def format_uid(u_id: str) -> str:
+    return slugify(u_id)
+
+
 class KlyqaDeviceState:
     state = {}
     ts: None  # timestamp to be read by the bulb entities and determines
@@ -367,9 +371,6 @@ class KlyqaLightDevice:
         self.connection = connection
 
 
-from threading import Thread
-
-
 class Klyqa:
     """Klyqa Manager Module"""
 
@@ -387,8 +388,6 @@ class Klyqa:
     __send_search_mutex = threading.Lock()
     __send_workers = []
     __search_worker: Thread = None
-    # add_entities_ha: AddEntitiesCallback
-    ha_add_new_light_entity: AddEntitiesCallback
 
     def set_send_search_worker(
         self, search_worker: Thread = None, send_worker: Thread = None
@@ -457,6 +456,18 @@ class Klyqa:
         """Login to klyqa account."""
         self._access_token = ""
         self._account_token = ""
+
+        if not self._host:
+            LOGGER.error("Missing host url.")
+            return False
+
+        if not self._username:
+            LOGGER.error("Missing username.")
+            return False
+
+        if not self._password:
+            LOGGER.error("Missing password.")
+            return False
 
         login_data = {"email": self._username, "password": self._password}
         try:
@@ -641,7 +652,9 @@ class Klyqa:
             for device_state in self._device_states:
                 entity: Entity = light_c.get_entity(
                     entity_id=ENTITY_ID_FORMAT.format(
-                        slugify(self._device_states.get(device_state).get("deviceId"))
+                        format_uid(
+                            self._device_states.get(device_state).get("deviceId")
+                        )
                     ).lower()
                 )
                 if entity:
@@ -666,7 +679,7 @@ class Klyqa:
                     print("update ent " + state["deviceId"].lower())
                     # ent: Entity = light_c.get_entity(
                     #     entity_id=ENTITY_ID_FORMAT.format(
-                    #         slugify(state["deviceId"])
+                    #         format_uid(state["deviceId"])
                     #     ).lower()
                     # )
                     # #     "light." + state["deviceId"].lower()
@@ -722,24 +735,34 @@ class Klyqa:
         return self.sio.eio.state != "disconnected"
 
     def load_settings_eco(self) -> bool:
-        # if not self.__settings_mutex.acquire(blocking=True, timeout=REQUEST_TIMEOUT):
-        #     return False
-        ret = False
-        if datetime.datetime.now() - self._settings_loaded_ts >= self.scan_interval:
-            """look that the settings are loaded only once in the scan interval"""
-            ret = self.__load_settings()
-        # self.__settings_mutex.release()
+        if not self.__settings_mutex.acquire(blocking=True, timeout=REQUEST_TIMEOUT):
+            return False
+        try:
+            ret = False
+            now = datetime.datetime.now()
+            if now - self._settings_loaded_ts >= datetime.timedelta(
+                seconds=self.scan_interval
+            ):
+                """look that the settings are loaded only once in the scan interval"""
+                ret = self.__load_settings()
+        finally:
+            self.__settings_mutex.release()
         return ret
 
     def load_settings(self) -> bool:
-        # if not self.__settings_mutex.acquire(blocking=True, timeout=REQUEST_TIMEOUT):
-        #     return False
+
+        if not self.__settings_mutex.acquire(blocking=True, timeout=REQUEST_TIMEOUT):
+            return False
+
         ret = self.__load_settings()
-        # self.__settings_mutex.release()
+
+        # asyncio.run(self.search_missing_bulbs())
+        self.__settings_mutex.release()
         return ret
 
     def __load_settings(self) -> bool:
-        """Load settings from klyqa account."""
+        LOGGER.info(f"Load settings from klyqa account {self._username}.")
+
         settings_response = self.request_get_beared("/settings")
         if settings_response.status_code != 200:
             return False
@@ -762,6 +785,24 @@ class Klyqa:
                 LOGGER.debug("Couldn't load settings")
                 return False
 
+        if EVENT_KLYQA_NEW_LIGHT in self.hass.bus._listeners:
+            # search and update light states.
+            asyncio.run(
+                self.search_lights(broadcast_repetions=2)
+            )  # , seconds_to_discover=2))
+            for d in self._settings["devices"]:
+                # look if any onboarded device is not in the entity registry.
+                u_id = format_uid(d["localDeviceId"])
+
+                light = [
+                    e
+                    for e in self.hass.data["light"].entities
+                    if hasattr(e, "u_id") and e.u_id == u_id
+                ]
+
+                if len(light) == 0:
+                    """found klyqa device not in the light entities"""
+                    self.hass.bus.fire(EVENT_KLYQA_NEW_LIGHT, d)
         return True
 
     def shutdown(self):
@@ -786,15 +827,20 @@ class Klyqa:
 
     async def search_missing_bulbs(self):
         """TODO: this function is crap. we look if any bulb connection is missing and search then for it. therefore make a list of bulbs missing connection and then look for them."""
-        if len(self.lights) < len(
-            self._settings.get("devices")
-        ):  # self._settings.devices
-            await self.search_lights()
+        if (
+            not self._settings
+            or "devices" not in self._settings
+            or len(self.lights) < len(self._settings.get("devices"))
+        ):
+            await self.search_lights(seconds_to_discover=2)
 
-    async def search_lights(self, seconds_to_discover=10, u_id=None):
+    async def search_lights(
+        self, seconds_to_discover=10, broadcast_repetions=-1, u_id=None
+    ):
         """Get a thread lock safe light searching broadcast of the klyqa bulbs."""
 
         while True:
+            """look for living tcp connection"""
             got_mutex = self.__search_lights_mutex.acquire(blocking=False)
             if not got_mutex and not u_id:
                 """another thread is already searching for all lights"""
@@ -821,13 +867,15 @@ class Klyqa:
             if got_mutex:
                 # self.__search_lights_mutex_type = MUTEX_SEARCHING
                 break
-            if self.__search_lights_mutex.acquire(blocking=True, timeout=100):
+            if self.__search_lights_mutex.acquire(blocking=True, timeout=1):
                 break
             # time.sleep(0.2)
 
             await asyncio.sleep(0.2)
 
-        return_connection = await self.__search_lights(seconds_to_discover, u_id)
+        return_connection = await self.__search_lights(
+            seconds_to_discover, broadcast_repetions=broadcast_repetions, u_id=u_id
+        )
 
         LOGGER.info(
             "Search for bulbs finished. " + str(threading.current_thread().ident),
@@ -835,7 +883,9 @@ class Klyqa:
         self.__search_lights_mutex.release()
         return return_connection
 
-    async def __search_lights(self, seconds_to_discover=10, u_id=None):
+    async def __search_lights(
+        self, seconds_to_discover=10, broadcast_repetions=-1, u_id=None
+    ):
         """
         If the local device id u_id is given, the function will search for lights
         and return the connection if the light with the u_id is found
@@ -877,12 +927,15 @@ class Klyqa:
 
         lights_found_num = 0
         # settings_lights_num = len(self._settings.get("devices"))
+        repetions = 0
         while (
             not return_connection
+            and (broadcast_repetions < 0 or repetions < broadcast_repetions)
             # and
             # lights_found_num < settings_lights_num and
             # seconds_left.seconds < seconds_to_discover
         ):
+            repetions = repetions + 1
             LOGGER.debug("Broadcasting QCX-SYN Burst\n")
             read_burst_response = True
             try:
@@ -904,6 +957,19 @@ class Klyqa:
                     state = await self.__local_send_to_bulb(
                         "--request", connection=connection, reconnect=False
                     )
+                    if (
+                        state
+                        and "type" in state
+                        and state["type"] == "status"
+                        and connection.u_id
+                    ):
+                        # if not connection.u_id in self.lights:
+                        self.lights[connection.u_id] = KlyqaLightDevice(
+                            state=state, connection=connection
+                        )
+                        # else:
+                        #     self.lights[connection.u_id].state = state, connection=connection
+                        #     )
                     if state and (
                         not connection.u_id in self.lights
                         or not self.lights[connection.u_id].connection
@@ -925,7 +991,7 @@ class Klyqa:
                             # if there is still an open connection try to close it
                             try:
                                 self.lights[
-                                    slugify(connection.u_id)
+                                    format_uid(connection.u_id)
                                 ].connection.socket.close()
                             except Exception as ex:
                                 pass
@@ -970,7 +1036,9 @@ class Klyqa:
     # def get_device_state(self, u_id):
     #     if u_id in self._device_states and u_id in self._device_states[u_id]
     #         return
-    async def local_send_to_bulb(self, *argv, u_id=None, **kwargs) -> dict:
+    async def local_send_to_bulb(
+        self, *argv, u_id=None, seconds_to_discover=0, **kwargs
+    ) -> dict:
         """
         Sending commands to the bulb. Put the local device id (u_id) of the bulb
         in the kwargs arguments. It finds the connection to the bulb by the local device
@@ -989,7 +1057,7 @@ class Klyqa:
         """
 
         if u_id not in self.lights:
-            await self.search_lights(u_id=u_id, seconds_to_discover=0)
+            await self.search_lights(u_id=u_id, seconds_to_discover=seconds_to_discover)
             return None
 
         response = None
@@ -1408,7 +1476,7 @@ class Klyqa:
                 if connection.state == STATE_WAIT_IV and pkg_type == 0:
                     LOGGER.debug("Plain: " + str(pkg))
                     response_object = json.loads(pkg)
-                    connection.u_id = slugify(response_object["ident"]["unit_id"])
+                    connection.u_id = format_uid(response_object["ident"]["unit_id"])
                     devices = {}
                     if not self._settings or not (
                         devices := self._settings.get("devices")
@@ -1416,7 +1484,7 @@ class Klyqa:
                         LOGGER.warn("No Klyqa settings found. Stop searching lights")
                         return
                     for device in devices:
-                        if slugify(device["localDeviceId"]) == connection.u_id:
+                        if format_uid(device["localDeviceId"]) == connection.u_id:
                             aes_key = bytes.fromhex(device["aesKey"])
                             break
                     if not aes_key:
