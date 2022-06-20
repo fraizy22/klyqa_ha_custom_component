@@ -773,6 +773,7 @@ class Klyqa:
 
                 self._settings_loaded_ts = datetime.datetime.now()
 
+                # BUG: Non-thread-safe operation invoked on an event loop other than the current one
                 if self.sync_rooms and len(self._settings.get("rooms")) > 0:
                     LOGGER.debug("Applying rooms from klyqa accounts to Home Assistant")
                     area_reg = ar.async_get(self.hass)
