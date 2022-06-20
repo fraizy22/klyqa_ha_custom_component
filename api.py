@@ -777,10 +777,11 @@ class Klyqa:
                     LOGGER.debug("Applying rooms from klyqa accounts to Home Assistant")
                     area_reg = ar.async_get(self.hass)
                     for room in self._settings.get("rooms"):
-                        if not area_reg.async_get_area_by_name(
-                            room.get("name")
-                        ) and area_reg.async_create(room.get("name")):
-                            LOGGER.info("New room created: %s", room.get("name"))
+                        if not area_reg.async_get_area_by_name(room.get("name")):
+                            if self.hass.async_add_executor_job(
+                                area_reg.async_create, room.get("name")
+                            ):
+                                LOGGER.info("New room created: %s", room.get("name"))
             except Exception as e:
                 LOGGER.debug("Couldn't load settings")
                 return False

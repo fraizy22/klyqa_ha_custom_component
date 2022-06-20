@@ -12,7 +12,6 @@ from homeassistant.helpers import device_registry as dr
 
 from homeassistant.util import dt as dt_util, ensure_unique_string, slugify
 
-# from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from homeassistant.core import HomeAssistant, callback, Event
 
 import voluptuous as vol
@@ -348,11 +347,11 @@ class KlyqaLight(LightEntity):
             hw_version=self.settings.get("hardwareRevision"),
             configuration_url=url,
         )
-
+        # self._attr_device_info["suggested_area"] = entity_registry_entry.area_id
         self.rooms = []
         for room in self._klyqa_api._settings.get("rooms"):
             for device in room.get("devices"):
-                if device.get("localDeviceId") == self.u_id:
+                if format_uid(device.get("localDeviceId")) == self.u_id:
                     self.rooms.append(room)
 
         entity_registry = er.async_get(self.hass)

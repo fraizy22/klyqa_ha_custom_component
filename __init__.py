@@ -1,7 +1,7 @@
 ###############################################################################
 #
-#
 #                   The Klyqa Home Assistant Integration
+#
 #
 # Company: QConnex GmbH / Klyqa
 #
@@ -12,55 +12,46 @@
 #
 ###############################################################################
 #
+# Todo:
 #
-# TODOs:
-#
-#   Bugs:
+#   Warnings:
 #       + Klyqa integration not making unique entity ids.
+#           - Bug occures when entities with same id as in the klyqa account
+#             are definied in the configuration.yaml file
 #
 #   Features:
 #       + On try switchup lamp, search the lamp in the network
 #       + Load and cache profiles
 #       + Address cache on discover devices and connections
-#       + Mutexes asyncio lock based.
-#       + Rooms, Timers, Routines, Device Groups
-#       + Do we need remove entities as well, when they are not as onboarded listed anymore? I guess so.
+#       + Mutexes asyncio lock based
+#       + (Rooms working), Timers, Routines, Device Groups
+#       + Remove entities when they are gone from the klyqa account
 #
-#   Codequality
-#       + Convert magicvalues to constants (commands, arguments, values, etc)
+#   QA:
+#       + Convert magicvalues to constants (commands, arguments, values)
 #
 #
-###############################################################################
+##############################################################################
 
 from __future__ import annotations
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_TYPE, Platform
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.typing import ConfigType, DiscoveryInfoType
 from homeassistant.helpers.entity_component import EntityComponent
 
-from homeassistant.helpers.area_registry import AreaEntry, AreaRegistry
-import homeassistant.helpers.area_registry as area_registry
-
-from .const import DOMAIN, CONF_POLLING, CONF_SYNC_ROOMS, LOGGER
-
+from .const import DOMAIN, CONF_SYNC_ROOMS, LOGGER
+from homeassistant.helpers.typing import ConfigType
 from .api import Klyqa
-import functools as ft
 from datetime import timedelta
-from async_timeout import timeout
-from typing import Any
 
 from homeassistant.const import (
-    ATTR_ENTITY_ID,
     CONF_HOST,
     CONF_PASSWORD,
     CONF_USERNAME,
     EVENT_HOMEASSISTANT_STOP,
     CONF_SCAN_INTERVAL,
 )
-
 
 # TODO List the platforms that you want to support.
 # For your initial PR, limit it to 1 platform.
