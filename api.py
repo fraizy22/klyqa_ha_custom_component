@@ -382,7 +382,8 @@ class Klyqa:
     _settings_loaded_ts = None
     _device_states = {}
 
-    __search_lights_mutex = threading.Lock()
+    __connection_mutex = asyncio.Lock()
+    __connection_mutex_task: asyncio.Task
     __settings_mutex = threading.Lock()
     # __sending_mutex = threading.Lock() """exclude searching from multiple sending threads"""
     __send_search_mutex = threading.Lock()
@@ -451,6 +452,7 @@ class Klyqa:
         self._host = host
         self.hass = hass
         self.scan_interval = scan_interval
+        self.__connection_mutex_task = None
 
     def login(self) -> bool:
         """Login to klyqa account."""
@@ -790,7 +792,7 @@ class Klyqa:
         if EVENT_KLYQA_NEW_LIGHT in self.hass.bus._listeners:
             # search and update light states.
             asyncio.run(
-                self.search_lights(broadcast_repetions=2)
+                self.search_lights(broadcast_repetitions=2)
             )  # , seconds_to_discover=2))
             for d in self._settings["devices"]:
                 # look if any onboarded device is not in the entity registry.
@@ -837,13 +839,13 @@ class Klyqa:
             await self.search_lights(seconds_to_discover=2)
 
     async def search_lights(
-        self, seconds_to_discover=10, broadcast_repetions=-1, u_id=None
+        self, seconds_to_discover=10, broadcast_repetitions=-1, u_id=None
     ):
         """Get a thread lock safe light searching broadcast of the klyqa bulbs."""
 
         while True:
             """look for living tcp connection"""
-            got_mutex = self.__search_lights_mutex.acquire(blocking=False)
+            got_mutex = await self.__connection_mutex.acquire()  # blocking=False
             if not got_mutex and not u_id:
                 """another thread is already searching for all lights"""
                 return None
@@ -867,26 +869,28 @@ class Klyqa:
                 except Exception:
                     pass
             if got_mutex:
-                # self.__search_lights_mutex_type = MUTEX_SEARCHING
+                # self.__connection_mutex_type = MUTEX_SEARCHING
+                self.__connection_mutex_task = asyncio.current_task()
                 break
-            if self.__search_lights_mutex.acquire(blocking=True, timeout=1):
+            if await self.__connection_mutex.acquire():  # blocking=True, timeout=1):
+                self.__connection_mutex_task = asyncio.current_task()
                 break
             # time.sleep(0.2)
 
             await asyncio.sleep(0.2)
 
         return_connection = await self.__search_lights(
-            seconds_to_discover, broadcast_repetions=broadcast_repetions, u_id=u_id
+            seconds_to_discover, broadcast_repetitions=broadcast_repetitions, u_id=u_id
         )
 
         LOGGER.info(
             "Search for bulbs finished. " + str(threading.current_thread().ident),
         )
-        self.__search_lights_mutex.release()
+        self.__connection_mutex.release()
         return return_connection
 
     async def __search_lights(
-        self, seconds_to_discover=10, broadcast_repetions=-1, u_id=None
+        self, seconds_to_discover=10, broadcast_repetitions=-1, u_id=None
     ):
         """
         If the local device id u_id is given, the function will search for lights
@@ -929,15 +933,15 @@ class Klyqa:
 
         lights_found_num = 0
         # settings_lights_num = len(self._settings.get("devices"))
-        repetions = 0
+        repetitions = 0
         while (
             not return_connection
-            and (broadcast_repetions < 0 or repetions < broadcast_repetions)
+            and (broadcast_repetitions < 0 or repetitions < broadcast_repetitions)
             # and
             # lights_found_num < settings_lights_num and
             # seconds_left.seconds < seconds_to_discover
         ):
-            repetions = repetions + 1
+            repetitions = repetitions + 1
             LOGGER.debug("Broadcasting QCX-SYN Burst\n")
             read_burst_response = True
             try:
@@ -1083,31 +1087,95 @@ class Klyqa:
 
         return response
 
-    async def _local_send_to_bulb(self, *argv, **kwargs) -> dict:
+    async def _local_send_to_bulb(
+        self, *argv, u_id=None, timeout=10, connection=None, **kwargs
+    ) -> dict:
 
         started = datetime.datetime.now()
 
-        while True:
-            got_mutex = self.__search_lights_mutex.acquire(blocking=False)
+        while (
+            self.__connection_mutex.locked()
+            and self.__connection_mutex_task
+            and self.__connection_mutex_task != asyncio.current_task()
+        ):
 
-            if got_mutex:
-                # self.__search_lights_mutex_type = MUTEX_SENDING
-                break
-            # time.sleep(0.2)
-            await asyncio.sleep(0.2)
-            elapsed = datetime.datetime.now() - started
-            if elapsed > datetime.timedelta(seconds=10):
-                return
+            if not self.__connection_mutex_task or self.__connection_mutex_task.done():
+                if not self.__connection_mutex.release():
+                    return None
 
-        return_value = await self.__local_send_to_bulb(*argv, **kwargs)
+            try:
+                await asyncio.wait_for(
+                    self.__connection_mutex_task,
+                    timeout=timeout
+                    - (datetime.datetime.now() - started).total_seconds(),  # .seconds,
+                )
+                await asyncio.sleep(0.2)
+            except asyncio.TimeoutError:
+                LOGGER.error(f"Timeout, cancel other connection mutex task")
+                self.__connection_mutex_task.cancel()
+                await asyncio.sleep(0.2)
+                continue
+            except:
+                pass
 
-        if got_mutex:
-            self.__search_lights_mutex.release()
+            # got_mutex = self.__connection_mutex.acquire(blocking=False)
+
+            # if got_mutex:
+            #     self.__connection_mutex_task = asyncio.current_task()
+            #     break
+
+            # if not self.__connection_mutex_task or self.__connection_mutex_task.done():
+            #     if not self.__connection_mutex.release():
+            #         return None
+            #     continue
+
+            # await asyncio.sleep(0.2)
+            # elapsed = datetime.datetime.now() - started
+            # if elapsed > datetime.timedelta(seconds=timeout):
+            #     try:
+            #         self.__connection_mutex_task.cancel()
+            #         if not self.__connection_mutex_task.done():
+            #             asyncio.sleep(1)
+            #             if not self.__connection_mutex_task.done():
+            #                 return None
+            #         continue
+            #     except Exception as excp:
+            #         LOGGER.warn("Could not end blocking task on connection mutex")
+            #         return None
+        if not await self.__connection_mutex.acquire():
+            return None
+        self.__connection_mutex_task = asyncio.current_task()
+
+        return_value = None
+        try:
+            return_value = await self.__local_send_to_bulb(*argv, **kwargs)
+        except Exception as exception:
+            pass
+
+        try:
+            connection.socket.shutdown(socket.SHUT_RDWR)
+            connection.socket.close()
+            if u_id and u_id in self.lights:
+                self.lights[u_id].connection = None
+        except Exception as exception:
+            pass
+
+        if u_id and not return_value:
+            """clear state on no reply, making entity state unavailable"""
+            self.lights[u_id].state = None
+
+        self.__connection_mutex.release()
 
         return return_value
 
     async def __local_send_to_bulb(
-        self, *argv, connection, reconnect=True, retry=False, **kwargs
+        self,
+        *argv,
+        connection,
+        reconnect=True,
+        retry=False,
+        timeout_response=10000,
+        **kwargs,
     ) -> dict:
         """
         Sending commands to the bulb. Put the connection object to the bulb
@@ -1426,7 +1494,7 @@ class Klyqa:
                 if len(message_queue_tx) > 0 and send_next:
                     msg, ts = message_queue_tx.pop()
                     # pause = datetime.timedelta(milliseconds=ts)
-                    pause = datetime.timedelta(milliseconds=10000)  # 10secs max timeout
+                    pause = datetime.timedelta(milliseconds=timeout_response)
                     if not send_msg(connection.socket, msg, connection.sending_aes):
                         """Upon send error, try reconnect to the lamps and append message for transmission again."""
                         try:

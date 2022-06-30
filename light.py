@@ -508,8 +508,7 @@ class KlyqaLight(LightEntity):
             " ".join(args),
         )
         ret = await self._klyqa_api.local_send_to_bulb(*(args), u_id=self.u_id)
-        if ret:
-            pass
+
         await self.async_update()
 
     async def async_update_klyqa(self):
