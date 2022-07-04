@@ -390,6 +390,39 @@ class Klyqa:
     __send_workers = []
     __search_worker: Thread = None
 
+    def __init__(
+        self,
+        username,
+        password,
+        host,
+        hass: HomeAssistant = None,
+        sync_rooms=True,
+        scan_interval=30,
+    ):
+        self._username = username
+        self._password = password
+        self.sync_rooms: bool = sync_rooms
+        self._host = host
+        self.hass = hass
+        self.scan_interval = scan_interval
+        self.__connection_mutex_task = None
+
+        self.lights = {}
+        self._access_token = ""
+        self._account_token = ""
+        self._rest_headers = {}
+        self._settings = {}
+        self._settings_loaded_ts = None
+        self._device_states = {}
+
+        self.__connection_mutex = asyncio.Lock()
+        self.__connection_mutex_task: asyncio.Task
+        self.__settings_mutex = threading.Lock()
+        # __sending_mutex = threading.Lock() """exclude searching from multiple self.sending threads"""
+        self.__send_search_mutex = threading.Lock()
+        self.__send_workers = []
+        self.__search_worker: Thread = None
+
     def set_send_search_worker(
         self, search_worker: Thread = None, send_worker: Thread = None
     ) -> bool:
@@ -436,23 +469,6 @@ class Klyqa:
 
         if got_mutex:
             self.__send_search_mutex.release()
-
-    def __init__(
-        self,
-        username,
-        password,
-        host,
-        hass: HomeAssistant = None,
-        sync_rooms=True,
-        scan_interval=30,
-    ):
-        self._username = username
-        self._password = password
-        self.sync_rooms: bool = sync_rooms
-        self._host = host
-        self.hass = hass
-        self.scan_interval = scan_interval
-        self.__connection_mutex_task = None
 
     def login(self) -> bool:
         """Login to klyqa account."""
@@ -810,7 +826,7 @@ class Klyqa:
         return True
 
     def shutdown(self):
-        """Load settings from klyqa account."""
+        """Logout again from klyqa account."""
         if self.sio:
             self.sio.disconnect()
         if self._access_token:

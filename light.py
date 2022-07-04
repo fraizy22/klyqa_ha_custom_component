@@ -255,6 +255,7 @@ class KlyqaLight(LightEntity):
     entity_registry: EntityRegistry | None = None
     """entity added finished"""
     _added_klyqa: bool = False
+    u_id: int
 
     def __init__(
         self,
