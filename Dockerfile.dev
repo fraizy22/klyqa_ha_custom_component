@@ -1,0 +1,12 @@
+FROM python:3.9-alpine
+
+# ADD bulb_cli.py /
+ADD .git /
+ADD *.py /
+ADD requirements.txt /
+
+RUN apk add bash git gcc libc-dev bash-completion coreutils nano
+
+#RUN pip install -r requirements.txt
+
+# ENTRYPOINT ["/bulb_cli.py"]
