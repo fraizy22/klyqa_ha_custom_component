@@ -28,5 +28,6 @@
     "donjayamanne.git-extension-pack",
     "howardzuo.vscode-git-tags",
     "donjayamanne.python-environment-manager"
-  ]
+  ],
+  "postCreateCommand": "git config --global --unset commit.gpgsign"
 }
