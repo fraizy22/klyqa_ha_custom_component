@@ -397,7 +397,7 @@ class Klyqa:
         host,
         hass: HomeAssistant = None,
         sync_rooms=True,
-        scan_interval=30,
+        scan_interval=datetime.timedelta(seconds=30),
     ):
         self._username = username
         self._password = password
@@ -758,9 +758,7 @@ class Klyqa:
         try:
             ret = False
             now = datetime.datetime.now()
-            if now - self._settings_loaded_ts >= datetime.timedelta(
-                seconds=self.scan_interval
-            ):
+            if now - self._settings_loaded_ts >= self.scan_interval:
                 """look that the settings are loaded only once in the scan interval"""
                 ret = self.__load_settings()
         finally:
