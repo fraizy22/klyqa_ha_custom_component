@@ -115,25 +115,25 @@ async def async_setup_entry(
     )
 
 
-# async def async_setup_platform(
-#     hass: HomeAssistant,
-#     config: ConfigType,
-#     add_entities: AddEntitiesCallback,
-#     discovery_info: DiscoveryInfoType | None = None,
-# ) -> None:
-#     """async_setup_platform"""
-#     klyqa = None
-#     if hasattr(hass.data[DOMAIN], "klyqa"):
-#         klyqa: HAKlyqaAccount = HAKlyqaAccount(hass.data[DOMAIN].klyqa)
-#     else:
-#         klyqa = await create_klyqa_api_from_config(hass, config)
-#     await async_setup_klyqa(
-#         hass,
-#         config,
-#         add_entities,
-#         klyqa=klyqa,
-#         discovery_info=discovery_info,
-#     )
+async def async_setup_platform(
+    hass: HomeAssistant,
+    config: ConfigType,
+    add_entities: AddEntitiesCallback,
+    discovery_info: DiscoveryInfoType | None = None,
+) -> None:
+    """async_setup_platform"""
+    klyqa = None
+    if hasattr(hass.data[DOMAIN], "klyqa"):
+        klyqa: HAKlyqaAccount = hass.data[DOMAIN].klyqa
+    else:
+        klyqa = await create_klyqa_api_from_config(hass, config)
+    await async_setup_klyqa(
+        hass,
+        config,
+        add_entities,
+        klyqa=klyqa,
+        discovery_info=discovery_info,
+    )
 
 
 async def create_klyqa_api_from_config(hass, config: ConfigType) -> HAKlyqaAccount:
@@ -154,7 +154,9 @@ async def create_klyqa_api_from_config(hass, config: ConfigType) -> HAKlyqaAccou
         # sync_rooms=sync_rooms,
         # scan_interval=scan_interval,
     )
-    if not await hass.async_add_executor_job(klyqa.login):
+    # if not await hass.async_add_executor_job(klyqa.login):
+    if not await hass.async_run_job(klyqa.login):
+    # if not await asyncio.run(klyqa.login()):
         LOGGER.error(
             "Error while trying to start Klyqa Integration from configuration.yaml."
         )
