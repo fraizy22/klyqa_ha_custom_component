@@ -7,7 +7,7 @@
   "ssdp": [],
   "zeroconf": [],
   "homekit": {},
-  "requirements": ["pycryptodomex==3.14.1", "websockets", "aiofiles"],
+  "requirements": ["pycryptodomex==3.14.1", "websockets", "aiofiles", "python-slugify"],
   "dependencies": ["network"],
   "after_dependencies": [],
   "codeowners": [

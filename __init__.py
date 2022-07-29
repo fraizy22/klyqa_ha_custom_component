@@ -42,8 +42,15 @@ from homeassistant.helpers.entity_component import EntityComponent
 
 from .const import DOMAIN, CONF_SYNC_ROOMS, LOGGER
 from homeassistant.helpers.typing import ConfigType
-from .api import Klyqa
+
+# from .api import Klyqa
+# import api.bulb_cli as api
+# from . import api
+from .api import bulb_cli as api
 from datetime import timedelta
+from .datacoordinator import KlyqaDataCoordinator, HAKlyqaAccount
+
+import asyncio
 
 from homeassistant.const import (
     CONF_HOST,
@@ -63,7 +70,9 @@ async def async_setup(hass: HomeAssistant, yaml_config: ConfigType) -> bool:
     """Set up the klyqa component."""
     if DOMAIN in hass.data:
         return True
-    component = hass.data[DOMAIN] = EntityComponent(LOGGER, DOMAIN, hass, SCAN_INTERVAL)
+    component = hass.data[DOMAIN] = KlyqaDataCoordinator.instance(
+        LOGGER, DOMAIN, hass, SCAN_INTERVAL
+    )
     await component.async_setup(yaml_config)
     component.entries = {}
     component.remove_listeners = []
@@ -84,35 +93,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     sync_rooms = (
         entry.data.get(CONF_SYNC_ROOMS) if entry.data.get(CONF_SYNC_ROOMS) else False
     )
-    klyqa_api: Klyqa = None
+    component: KlyqaDataCoordinator = hass.data[DOMAIN]
+    klyqa_api: HAKlyqaAccount = None
     if (
         DOMAIN in hass.data
-        and hasattr(hass.data[DOMAIN], "entries")
-        and entry.entry_id in hass.data[DOMAIN].entries
+        and hasattr(component, "entries")
+        and entry.entry_id in component.entries
     ):
-        klyqa_api = hass.data[DOMAIN].entries[entry.entry_id]
+        klyqa_api: HAKlyqaAccount = component.entries[entry.entry_id]
         await hass.async_add_executor_job(klyqa_api.shutdown)
 
-        klyqa_api._username = username
-        klyqa_api._password = password
-        klyqa_api._host = host
-        klyqa_api.sync_rooms = sync_rooms
+        klyqa_api.username = username
+        klyqa_api.password = password
+        klyqa_api.host = host
+        # klyqa_api.sync_rooms = sync_rooms
     else:
-        klyqa_api: Klyqa = Klyqa(
+        klyqa_api: HAKlyqaAccount = HAKlyqaAccount(
+            component.udp,
+            component.tcp,
             username,
             password,
             host,
             hass,
-            sync_rooms,
-            int(hass.data["light"].scan_interval.total_seconds()),
+            # sync_rooms,
+            # int(hass.data["light"].scan_interval.total_seconds()),
         )
-        if not hasattr(hass.data[DOMAIN], "entries"):
-            hass.data[DOMAIN].entries = {}
-        hass.data[DOMAIN].entries[entry.entry_id] = klyqa_api
+        if not hasattr(component, "entries"):
+            component.entries = {}
+        component.entries[entry.entry_id] = klyqa_api
 
-    if not await hass.async_add_executor_job(
-        klyqa_api.login,
-    ):
+    # if not await hass.async_create_task(klyqa_api.login()):
+    if not await klyqa_api.login():
         return False
 
     entry.async_on_unload(entry.add_update_listener(async_reload_entry))

@@ -13,7 +13,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import config_entry_flow
 
-from .api import Klyqa
+from .api import bulb_cli as api
 from .const import DOMAIN, LOGGER
 import homeassistant.helpers.config_validation as cv
 
@@ -117,7 +117,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
         try:
 
-            self._klyqa: Klyqa = Klyqa(
+            self._klyqa: Klyqa = api.Klyqa_account(
                 self._username,
                 self._password,
                 self._host,
@@ -198,7 +198,7 @@ class KlyqaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._klyqa = None
         pass
 
-    def klyqa(self) -> Klyqa:
+    def klyqa(self) -> api.Klyqa_account:
         if self._klyqa:
             return self._klyqa
         if not self.hass or not DOMAIN in self.hass.data:
@@ -247,7 +247,7 @@ class KlyqaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         try:
 
-            self._klyqa: Klyqa = Klyqa(
+            self._klyqa: Klyqa = api.Klyqa_account(
                 self._username,
                 self._password,
                 self._host,
