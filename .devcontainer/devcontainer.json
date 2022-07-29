@@ -1,5 +1,5 @@
 {
-  "name": "Klyqa HA Integration",
+  "name": "HA Klyqa Integration",
   "build": {
     "dockerfile": "../Dockerfile.dev"
   },
