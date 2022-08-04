@@ -5,7 +5,7 @@ ADD .git /
 ADD *.py /
 ADD requirements.txt /
 
-RUN apk add bash git gcc libc-dev bash-completion coreutils nano
+RUN apk --no-cache add bash git gcc libc-dev bash-completion coreutils nano
 # RUN git config --global --unset commit.gpgsign
 #RUN pip install -r requirements.txt
 
