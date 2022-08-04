@@ -1,0 +1,3 @@
+[submodule "api"]
+	path = api
+	url = https://github.com/fraizy22/klyqa_cli_bulb_client
